@@ -1,0 +1,5 @@
+{
+  "name": "GradeViewer",
+  "description": "A comprehensive student grade management system with AI-powered insights. Teachers can manage records, and students can securely view their performance.",
+  "requestFramePermissions": []
+}
