@@ -4,9 +4,11 @@ import { UserRole, Student, Admin } from './types';
 import * as Storage from './services/storageService';
 import TeacherDashboard from './components/TeacherDashboard';
 import StudentDashboard from './components/StudentDashboard';
+import LandingPage from './components/LandingPage';
 import { ShieldCheck, GraduationCap, Lock, ArrowRight, BookOpen } from 'lucide-react';
 
 const App: React.FC = () => {
+  const [showLanding, setShowLanding] = useState(true);
   const [role, setRole] = useState<UserRole>(null);
   const [currentStudent, setCurrentStudent] = useState<Student | null>(null);
   const [currentAdmin, setCurrentAdmin] = useState<Admin | null>(null);
@@ -105,6 +107,7 @@ const App: React.FC = () => {
     setIdInput('');
     setPasswordInput('');
     setError('');
+    setShowLanding(true);
   };
 
   const handleProfileUpdate = (updatedStudent: Student) => {
@@ -125,6 +128,10 @@ const App: React.FC = () => {
 
   if (role === 'student' && currentStudent) {
     return <StudentDashboard student={currentStudent} onLogout={handleLogout} onProfileUpdate={handleProfileUpdate} />;
+  }
+
+  if (showLanding) {
+    return <LandingPage onGetStarted={() => setShowLanding(false)} />;
   }
 
   return (

@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Student, GradeData, Admin } from '../types';
 import * as Storage from '../services/storageService';
-import { Users, Plus, Save, Trash2, Search, X, LogOut, Download, Pencil, UserCog, Database, Upload, FileJson, Loader2 } from 'lucide-react';
+import { isSupabaseConfigured } from '../services/supabaseClient';
+import { Users, Plus, Save, Trash2, Search, X, LogOut, Download, Pencil, UserCog, Database, Upload, FileJson, Loader2, Wifi, WifiOff } from 'lucide-react';
 
 interface Props {
   admin: Admin;
@@ -25,6 +26,12 @@ const TeacherDashboard: React.FC<Props> = ({ admin, onLogout, onProfileUpdate })
   const [students, setStudents] = useState<Student[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
+  const [isRealtime, setIsRealtime] = useState(false);
+
+  // Debounce timers: key = `${studentId}:${field}`
+  const debounceTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // Snapshot before optimistic update for rollback
+  const prevStudentsRef = useRef<Student[]>([]);
   
   // Student Modal State
   const [showModal, setShowModal] = useState(false);
@@ -50,7 +57,24 @@ const TeacherDashboard: React.FC<Props> = ({ admin, onLogout, onProfileUpdate })
   const [currentGrades, setCurrentGrades] = useState<GradeData | null>(null);
 
   useEffect(() => {
+    // Initial load
     loadStudents();
+
+    // Real-time subscription (Supabase only)
+    const unsubscribe = Storage.subscribeToStudents((fresh) => {
+        setStudents(fresh);
+    });
+
+    if (isSupabaseConfigured()) {
+        setIsRealtime(true);
+    }
+
+    return () => {
+        unsubscribe();
+        // Clear any pending debounce timers
+        debounceTimers.current.forEach((t) => clearTimeout(t));
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadStudents = async () => {
@@ -121,40 +145,48 @@ const TeacherDashboard: React.FC<Props> = ({ admin, onLogout, onProfileUpdate })
     }
   };
 
-  const handleGradeChange = async (studentId: string, field: keyof GradeData, value: string) => {
-    // Allow empty string for better typing experience
-    if (value === '') {
-        // UI Update handled by optimistic update below
-    }
-
+  const handleGradeChange = useCallback(async (studentId: string, field: keyof GradeData, value: string) => {
     let numValue = value === '' ? 0 : parseFloat(value);
-    
-    // Validation
     if (isNaN(numValue)) return;
     if (numValue < 0) numValue = 0;
     if (numValue > MAX_SCORES[field]) numValue = MAX_SCORES[field];
 
-    // 1. Optimistic UI Update
-    const updatedStudents = students.map(s => {
-        if (s.id === studentId) {
-          return {
-            ...s,
-            gradeData: {
-              ...s.gradeData,
-              [field]: numValue
-            }
-          };
-        }
-        return s;
-    });
-    setStudents(updatedStudents);
+    // 1. Snapshot for potential rollback
+    prevStudentsRef.current = students;
 
-    // 2. Background API Call
-    const studentToSave = updatedStudents.find(s => s.id === studentId);
-    if (studentToSave) {
-        await Storage.updateStudentGrades(studentToSave);
-    }
-  };
+    // 2. Optimistic UI Update
+    setStudents((prev) =>
+      prev.map((s) =>
+        s.id === studentId
+          ? { ...s, gradeData: { ...s.gradeData, [field]: numValue } }
+          : s
+      )
+    );
+
+    // 3. Debounce the API call (500 ms)
+    const key = `${studentId}:${field}`;
+    const existing = debounceTimers.current.get(key);
+    if (existing) clearTimeout(existing);
+
+    debounceTimers.current.set(
+      key,
+      setTimeout(async () => {
+        debounceTimers.current.delete(key);
+        setStudents((current) => {
+          const studentToSave = current.find((s) => s.id === studentId);
+          if (studentToSave) {
+            Storage.updateStudentGrades(studentToSave).then((ok) => {
+              if (!ok) {
+                console.error('Failed to save grade, rolling back UI');
+                setStudents(prevStudentsRef.current);
+              }
+            });
+          }
+          return current;
+        });
+      }, 500)
+    );
+  }, [students]);
 
   // --- Admin Profile Management ---
 
@@ -210,6 +242,17 @@ const TeacherDashboard: React.FC<Props> = ({ admin, onLogout, onProfileUpdate })
              </div>
           </div>
           <div className="flex items-center gap-3">
+            {isRealtime ? (
+              <span className="hidden sm:flex items-center gap-1.5 text-xs text-green-400 bg-green-400/10 px-2 py-1 rounded-full border border-green-400/20">
+                <Wifi className="h-3 w-3" />
+                Live
+              </span>
+            ) : (
+              <span className="hidden sm:flex items-center gap-1.5 text-xs text-yellow-400 bg-yellow-400/10 px-2 py-1 rounded-full border border-yellow-400/20">
+                <WifiOff className="h-3 w-3" />
+                Offline
+              </span>
+            )}
             <button 
                 onClick={() => {
                     setProfileForm({

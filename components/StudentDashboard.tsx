@@ -1,11 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Student } from '../types';
 import { generateStudentInsight, generateStudyPlan } from '../services/geminiService';
-import { updateStudentProfile } from '../services/storageService';
+import { updateStudentProfile, subscribeToStudent } from '../services/storageService';
+import { isSupabaseConfigured } from '../services/supabaseClient';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell, ReferenceLine
 } from 'recharts';
-import { GraduationCap, Sparkles, LogOut, FileText, ClipboardList, BookOpen, UserCog, X, Save } from 'lucide-react';
+import { GraduationCap, Sparkles, LogOut, FileText, ClipboardList, BookOpen, UserCog, X, Save, Wifi, WifiOff } from 'lucide-react';
 
 interface Props {
   student: Student;
@@ -14,6 +15,10 @@ interface Props {
 }
 
 const StudentDashboard: React.FC<Props> = ({ student, onLogout, onProfileUpdate }) => {
+  // Local copy so real-time updates re-render without requiring parent state
+  const [liveStudent, setLiveStudent] = useState<Student>(student);
+  const [isRealtime, setIsRealtime] = useState(false);
+
   const [insight, setInsight] = useState<string>(student.aiSummary || '');
   const [loadingInsight, setLoadingInsight] = useState(false);
   const [studyPlan, setStudyPlan] = useState<string | null>(null);
@@ -28,7 +33,23 @@ const StudentDashboard: React.FC<Props> = ({ student, onLogout, onProfileUpdate 
       password: student.password
   });
 
-  const { gradeData } = student;
+  // Real-time subscription: update local grades when teacher changes them
+  useEffect(() => {
+    const unsubscribe = subscribeToStudent(student.id, (updated) => {
+      setLiveStudent((prev) => ({
+        ...prev,
+        gradeData: updated.gradeData,
+      }));
+    });
+
+    if (isSupabaseConfigured()) {
+      setIsRealtime(true);
+    }
+
+    return () => unsubscribe();
+  }, [student.id]);
+
+  const { gradeData } = liveStudent;
 
   // Midterm Calculation Logic (Max 50)
   const MIDTERM_MAX = 50;
@@ -64,7 +85,7 @@ const StudentDashboard: React.FC<Props> = ({ student, onLogout, onProfileUpdate 
 
   const handleGenerateInsight = async () => {
     setLoadingInsight(true);
-    const text = await generateStudentInsight(student);
+    const text = await generateStudentInsight(liveStudent);
     setInsight(text);
     setLoadingInsight(false);
   };
@@ -72,7 +93,7 @@ const StudentDashboard: React.FC<Props> = ({ student, onLogout, onProfileUpdate 
   const handleGetPlan = async (category: string) => {
       setActivePlanCategory(category);
       setLoadingPlan(true);
-      const plan = await generateStudyPlan(student, category);
+      const plan = await generateStudyPlan(liveStudent, category);
       setStudyPlan(plan);
       setLoadingPlan(false);
   };
@@ -80,7 +101,7 @@ const StudentDashboard: React.FC<Props> = ({ student, onLogout, onProfileUpdate 
   const handleUpdateProfile = async (e: React.FormEvent) => {
       e.preventDefault();
       const updatedStudent: Student = {
-          ...student,
+          ...liveStudent,
           name: profileForm.name,
           email: profileForm.email,
           password: profileForm.password
@@ -88,6 +109,7 @@ const StudentDashboard: React.FC<Props> = ({ student, onLogout, onProfileUpdate 
 
       const success = await updateStudentProfile(updatedStudent);
       if (success) {
+          setLiveStudent(updatedStudent);
           onProfileUpdate(updatedStudent);
           setShowProfileModal(false);
           alert("Profile updated successfully.");
@@ -110,12 +132,23 @@ const StudentDashboard: React.FC<Props> = ({ student, onLogout, onProfileUpdate 
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {isRealtime ? (
+              <span className="hidden sm:flex items-center gap-1.5 text-xs text-green-400 bg-green-400/10 px-2 py-1 rounded-full border border-green-400/20">
+                <Wifi className="h-3 w-3" />
+                Live
+              </span>
+            ) : (
+              <span className="hidden sm:flex items-center gap-1.5 text-xs text-yellow-400 bg-yellow-400/10 px-2 py-1 rounded-full border border-yellow-400/20">
+                <WifiOff className="h-3 w-3" />
+                Offline
+              </span>
+            )}
             <button 
                 onClick={() => {
                     setProfileForm({
-                        name: student.name,
-                        email: student.email || '',
-                        password: student.password
+                        name: liveStudent.name,
+                        email: liveStudent.email || '',
+                        password: liveStudent.password
                     });
                     setShowProfileModal(true);
                 }}
@@ -143,8 +176,8 @@ const StudentDashboard: React.FC<Props> = ({ student, onLogout, onProfileUpdate 
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col justify-between">
                 <div>
                     <h2 className="text-gray-500 text-sm font-semibold uppercase tracking-wider mb-2">Student Information</h2>
-                    <h3 className="text-2xl font-bold text-gray-800">{student.name}</h3>
-                    <p className="text-gray-500 font-mono text-sm mt-1">{student.id}</p>
+                    <h3 className="text-2xl font-bold text-gray-800">{liveStudent.name}</h3>
+                    <p className="text-gray-500 font-mono text-sm mt-1">{liveStudent.id}</p>
                 </div>
                 <div className="mt-8 pt-6 border-t border-gray-100">
                     <div className="flex justify-between items-end">

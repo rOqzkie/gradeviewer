@@ -93,13 +93,14 @@ const mapStudentToRow = (student: Student) => {
 
 export const getStudents = async (): Promise<Student[]> => {
   if (!isSupabaseConfigured() || !supabase) {
-      return new Promise(resolve => setTimeout(() => resolve(getLocalStudents()), 300));
+      return getLocalStudents();
   }
 
   const { data, error } = await supabase.from('students').select('*').order('name');
   if (error) {
-    console.error('Supabase Error:', error.message);
-    return [];
+    console.error('Supabase getStudents error:', error.message);
+    // Graceful fallback to local storage when Supabase is unreachable
+    return getLocalStudents();
   }
   return data.map(mapRowToStudent);
 };
@@ -243,18 +244,89 @@ export const exportDatabase = async (): Promise<string> => {
     return JSON.stringify({ students }, null, 2);
 };
 
-export const importDatabase = (json: string): boolean => {
+export const importDatabase = async (json: string): Promise<boolean> => {
     try {
         const parsed = JSON.parse(json);
-        if (parsed.students && Array.isArray(parsed.students)) {
-            // Only works in local mode for now
-            if (!isSupabaseConfigured()) {
-                saveLocalStudents(parsed.students);
-                return true;
-            }
+        if (!parsed.students || !Array.isArray(parsed.students)) return false;
+
+        if (!isSupabaseConfigured() || !supabase) {
+            saveLocalStudents(parsed.students);
+            return true;
         }
-        return false;
+
+        // Upsert all students into Supabase
+        const rows = parsed.students.map(mapStudentToRow);
+        const { error } = await supabase.from('students').upsert(rows, { onConflict: 'id' });
+        if (error) {
+            console.error('Supabase importDatabase error:', error.message);
+            return false;
+        }
+        return true;
     } catch (e) {
         return false;
     }
+};
+
+// --- REAL-TIME SUBSCRIPTIONS ---
+
+/**
+ * Subscribe to all changes in the students table.
+ * Fires callback with a fresh sorted list on every INSERT / UPDATE / DELETE.
+ * Returns an unsubscribe function – call it in a useEffect cleanup.
+ */
+export const subscribeToStudents = (
+    callback: (students: Student[]) => void
+): (() => void) => {
+    if (!isSupabaseConfigured() || !supabase) return () => {};
+
+    const channel = supabase
+        .channel('students-all')
+        .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'students' },
+            async () => {
+                const { data, error } = await supabase!
+                    .from('students')
+                    .select('*')
+                    .order('name');
+                if (!error && data) callback(data.map(mapRowToStudent));
+            }
+        )
+        .subscribe();
+
+    return () => {
+        supabase!.removeChannel(channel);
+    };
+};
+
+/**
+ * Subscribe to UPDATE events for a single student row.
+ * Fires callback with the updated Student whenever the row changes.
+ * Returns an unsubscribe function.
+ */
+export const subscribeToStudent = (
+    id: string,
+    callback: (student: Student) => void
+): (() => void) => {
+    if (!isSupabaseConfigured() || !supabase) return () => {};
+
+    const channel = supabase
+        .channel(`student-${id}`)
+        .on(
+            'postgres_changes',
+            {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'students',
+                filter: `id=eq.${id}`,
+            },
+            (payload) => {
+                callback(mapRowToStudent(payload.new));
+            }
+        )
+        .subscribe();
+
+    return () => {
+        supabase!.removeChannel(channel);
+    };
 };
